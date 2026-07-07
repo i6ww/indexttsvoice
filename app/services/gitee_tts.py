@@ -94,16 +94,26 @@ async def create_speech(request: GiteeTTSRequest) -> Path:
         detail = _extract_error_message(response.text)
         raise TTSServiceError(f"接口没有返回音频：{detail or '请检查请求参数和音色配置。'}")
 
-    output_path = _path_with_content_type_suffix(request.output_path, content_type)
+    output_path = _path_with_audio_suffix(request.output_path, content_type, response.content)
     await asyncio.to_thread(output_path.write_bytes, response.content)
     return output_path
 
 
-def _path_with_content_type_suffix(path: Path, content_type: str) -> Path:
-    suffix = _suffix_from_content_type(content_type)
+def _path_with_audio_suffix(path: Path, content_type: str, content: bytes) -> Path:
+    suffix = _suffix_from_audio_bytes(content) or _suffix_from_content_type(content_type)
     if suffix is None or path.suffix.lower() == suffix:
         return path
     return path.with_suffix(suffix)
+
+
+def _suffix_from_audio_bytes(content: bytes) -> str | None:
+    if content.startswith(b"RIFF") and content[8:12] == b"WAVE":
+        return ".wav"
+    if content.startswith(b"ID3"):
+        return ".mp3"
+    if len(content) >= 2 and content[0] == 0xFF and (content[1] & 0xE0) == 0xE0:
+        return ".mp3"
+    return None
 
 
 def _suffix_from_content_type(content_type: str) -> str | None:
