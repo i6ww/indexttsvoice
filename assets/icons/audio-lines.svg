@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="秒图语音工厂">
+  <rect width="256" height="256" rx="56" fill="#2f7df6"/>
+  <path d="M54 108v40M86 76v104M118 48v160M150 86v84M182 64v128M214 108v40"
+        fill="none"
+        stroke="#ffffff"
+        stroke-width="18"
+        stroke-linecap="round"
+        stroke-linejoin="round"/>
+</svg>
