@@ -42,6 +42,11 @@ from shiboken6 import isValid
 
 from app.core.config import AppConfig, VoiceProfile, load_config, save_config
 from app.services.gitee_tts import GiteeTTSRequest, create_speech
+from app.services.silence_trim import (
+    SILENCE_TRIM_LABELS,
+    normalize_silence_trim_mode,
+    shorten_silence,
+)
 from app.services.task_log import task_log_path, write_task_log
 from app.ui.widgets import CloneItem, NavButton, RowWidget
 from app.ui.workers import AsyncJob
@@ -551,6 +556,15 @@ class VoiceCloneWindow(QMainWindow):
         self.max_concurrency_spin.setRange(1, 10)
         self.max_concurrency_spin.setValue(self.config_model.max_concurrent_tasks)
         self.max_concurrency_spin.setSuffix(" 条")
+        self.silence_trim_combo = QComboBox()
+        for mode, label in SILENCE_TRIM_LABELS.items():
+            self.silence_trim_combo.addItem(label, mode)
+        silence_trim_mode = normalize_silence_trim_mode(
+            self.config_model.silence_trim_mode
+        )
+        self.silence_trim_combo.setCurrentIndex(
+            max(0, self.silence_trim_combo.findData(silence_trim_mode))
+        )
         self.failover_check = QCheckBox("接口异常时自动切换")
         self.failover_check.setChecked(self.config_model.failover_enabled)
 
@@ -559,7 +573,8 @@ class VoiceCloneWindow(QMainWindow):
         self._form_row(form, 2, "模型", self.model_edit)
         self._form_row(form, 3, "默认输出目录", self.settings_output_dir_edit)
         self._form_row(form, 4, "同时生成数量", self.max_concurrency_spin)
-        form.addWidget(self.failover_check, 5, 1)
+        self._form_row(form, 5, "停顿处理", self.silence_trim_combo)
+        form.addWidget(self.failover_check, 6, 1)
         form.setColumnStretch(1, 1)
 
         actions = QHBoxLayout()
@@ -579,7 +594,7 @@ class VoiceCloneWindow(QMainWindow):
         self.settings_status_label = QLabel("")
         self.settings_status_label.setObjectName("MutedLabel")
         actions.addWidget(self.settings_status_label)
-        form.addLayout(actions, 6, 0, 1, 2)
+        form.addLayout(actions, 7, 0, 1, 2)
 
         layout.addWidget(card)
         layout.addItem(QSpacerItem(1, 1, QSizePolicy.Minimum, QSizePolicy.Expanding))
@@ -900,7 +915,35 @@ class VoiceCloneWindow(QMainWindow):
         worker.start()
 
     async def _generate_spec(self, spec: GenerateSpec) -> Path:
-        return await create_speech(spec.request)
+        output = await create_speech(spec.request)
+        silence_trim_mode = normalize_silence_trim_mode(
+            self.config_model.silence_trim_mode
+        )
+        if silence_trim_mode == "off":
+            return output
+        try:
+            result = await asyncio.to_thread(shorten_silence, output, silence_trim_mode)
+        except BaseException as exc:  # noqa: BLE001 - keep generated audio
+            await asyncio.to_thread(
+                write_task_log,
+                "silence_trim_failed",
+                item_id=spec.item_id,
+                index=spec.index,
+                output_path=output,
+                error=str(exc),
+            )
+            return output
+        await asyncio.to_thread(
+            write_task_log,
+            "silence_trim_finished",
+            item_id=spec.item_id,
+            index=spec.index,
+            output_path=result.output_path,
+            original_duration_ms=result.original_duration_ms,
+            processed_duration_ms=result.processed_duration_ms,
+            compressed_segments=result.compressed_segments,
+        )
+        return result.output_path
 
     def _handle_worker_progress(self, payload: object) -> None:
         if not isinstance(payload, tuple):
@@ -1205,6 +1248,9 @@ class VoiceCloneWindow(QMainWindow):
             self.config_model.model = self.model_edit.text().strip() or "IndexTTS-2"
             self.config_model.output_dir = self.settings_output_dir_edit.text().strip() or "outputs"
             self.config_model.max_concurrent_tasks = self.max_concurrency_spin.value()
+            self.config_model.silence_trim_mode = normalize_silence_trim_mode(
+                str(self.silence_trim_combo.currentData())
+            )
             self.config_model.failover_enabled = self.failover_check.isChecked()
         if self._widget_is_alive("output_dir_edit"):
             self.config_model.output_dir = self.output_dir_edit.text().strip() or "outputs"

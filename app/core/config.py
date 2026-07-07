@@ -52,6 +52,7 @@ class AppConfig:
     output_dir: str = "outputs"
     output_format: str = "wav"
     max_concurrent_tasks: int = 3
+    silence_trim_mode: str = "off"
     failover_enabled: bool = True
     selected_voice_profile: str = "小鱼"
     voice_profiles: list[VoiceProfile] = field(default_factory=default_voice_profiles)
@@ -86,6 +87,7 @@ def load_config() -> AppConfig:
         max_concurrent_tasks=_coerce_int(
             data.get("max_concurrent_tasks"), config.max_concurrent_tasks, 1, 10
         ),
+        silence_trim_mode=str(data.get("silence_trim_mode", config.silence_trim_mode)),
         failover_enabled=bool(data.get("failover_enabled", config.failover_enabled)),
         selected_voice_profile=data.get(
             "selected_voice_profile", profiles[0].name
