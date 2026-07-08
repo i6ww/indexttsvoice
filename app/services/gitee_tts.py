@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import httpx
+
+from app.services.task_log import write_task_log
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,20 @@ async def create_speech(request: GiteeTTSRequest) -> Path:
         headers["X-Failover-Enabled"] = "true"
 
     try:
+        write_task_log(
+            "tts_request_prepared",
+            level="DEBUG",
+            model=request.model,
+            voice=request.voice,
+            base_url=request.base_url,
+            output_path=request.output_path,
+            input_chars=len(request.input_text),
+            prompt_audio_url=request.prompt_audio_url,
+            emo_audio_prompt_url=request.emo_audio_prompt_url,
+            emo_alpha=request.emo_alpha,
+            failover_enabled=request.failover_enabled,
+        )
+        started_at = time.perf_counter()
         timeout = httpx.Timeout(300.0, connect=30.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
@@ -73,29 +90,93 @@ async def create_speech(request: GiteeTTSRequest) -> Path:
                 content=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                 headers=headers,
             )
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        write_task_log(
+            "tts_response_received",
+            level="DEBUG",
+            status_code=response.status_code,
+            elapsed_ms=elapsed_ms,
+            content_type=response.headers.get("Content-Type", ""),
+            content_length=len(response.content),
+            output_path=request.output_path,
+        )
     except httpx.TimeoutException as exc:
+        write_task_log(
+            "tts_timeout",
+            level="ERROR",
+            base_url=request.base_url,
+            model=request.model,
+            output_path=request.output_path,
+            error=exc,
+        )
         raise TTSServiceError(
             "接口请求超时：服务器响应时间过长。请稍后重试，或减少单次并发生成数量。"
         ) from exc
     except httpx.ConnectError as exc:
+        write_task_log(
+            "tts_connection_error",
+            level="ERROR",
+            base_url=request.base_url,
+            model=request.model,
+            output_path=request.output_path,
+            error=exc,
+        )
         raise TTSServiceError(
             "网络连接失败：无法连接到语音合成接口，请检查网络、代理或 Base URL。"
         ) from exc
     except httpx.InvalidURL as exc:
+        write_task_log(
+            "tts_invalid_url",
+            level="ERROR",
+            base_url=request.base_url,
+            output_path=request.output_path,
+            error=exc,
+        )
         raise TTSServiceError("Base URL 格式不正确：请在设置中检查接口地址。") from exc
     except httpx.HTTPError as exc:
+        write_task_log(
+            "tts_http_error",
+            level="ERROR",
+            base_url=request.base_url,
+            model=request.model,
+            output_path=request.output_path,
+            error=exc,
+        )
         raise TTSServiceError(f"网络请求失败：{exc}") from exc
 
     if response.status_code >= 400:
+        write_task_log(
+            "tts_http_error",
+            level="ERROR",
+            status_code=response.status_code,
+            content_type=response.headers.get("Content-Type", ""),
+            response_excerpt=_response_excerpt(response.text),
+            output_path=request.output_path,
+        )
         raise TTSServiceError(_friendly_http_error(response))
 
     content_type = response.headers.get("Content-Type", "")
     if "application/json" in content_type:
         detail = _extract_error_message(response.text)
+        write_task_log(
+            "tts_response_error",
+            level="ERROR",
+            content_type=content_type,
+            detail=detail,
+            output_path=request.output_path,
+        )
         raise TTSServiceError(f"接口没有返回音频：{detail or '请检查请求参数和音色配置。'}")
 
     output_path = _path_with_audio_suffix(request.output_path, content_type, response.content)
     await asyncio.to_thread(output_path.write_bytes, response.content)
+    write_task_log(
+        "tts_output_written",
+        level="INFO",
+        output_path=output_path,
+        content_type=content_type,
+        bytes=len(response.content),
+        suffix=output_path.suffix,
+    )
     return output_path
 
 
@@ -167,6 +248,10 @@ def _extract_error_message(text: str) -> str:
             if isinstance(value, str) and value:
                 return value
     return text.strip()[:500]
+
+
+def _response_excerpt(text: str) -> str:
+    return text.strip().replace("\n", " ")[:500]
 
 
 def _looks_like_reference_url_error(text: str) -> bool:

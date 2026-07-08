@@ -73,7 +73,17 @@ Gitee AI 接口需要服务器主动拉取参考音频，因此音色 URL 必须
 
 ## 任务日志
 
-生成开始、成功和失败会记录到本机应用数据目录：
+生成开始、接口请求、接口响应、停顿处理、成功和失败都会记录到任务日志。
+
+打包后的 EXE 版本日志位于程序目录下：
+
+```text
+秒图语音工厂\_internal\log\tasks.jsonl
+```
+
+也可以在软件 `设置` 页面点击 `打开日志目录`。
+
+源码运行时，日志位于本机应用数据目录：
 
 ```text
 %APPDATA%\MiaoTuVoiceFactory\logs\tasks.jsonl
@@ -89,6 +99,14 @@ Gitee AI 接口需要服务器主动拉取参考音频，因此音色 URL 必须
 ```powershell
 notepad "$env:APPDATA\MiaoTuVoiceFactory\logs\tasks.jsonl"
 ```
+
+日志为 JSONL 格式，每一行是一条记录，包含 `time`、`level`、`event`、`message` 和相关上下文。常见级别：
+
+- `DEBUG`：接口请求准备、接口响应状态、耗时、返回类型和字节数等细节。
+- `INFO`：开始生成、音频写入、生成完成、停顿处理完成等正常流程。
+- `WARNING`：生成成功但附加处理失败，例如停顿处理失败后保留原音频。
+- `ERROR`：接口超时、网络连接失败、HTTP 错误、生成失败等需要处理的问题。
+- `CRITICAL`：严重异常预留级别。
 
 旧版本配置会自动从以下目录读取：
 

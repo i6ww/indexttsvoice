@@ -44,7 +44,7 @@ from shiboken6 import isValid
 from app.core.config import AppConfig, VoiceProfile, load_config, save_config
 from app.services.gitee_tts import GiteeTTSRequest, create_speech
 from app.services.silence_trim import shorten_silence
-from app.services.task_log import task_log_path, write_task_log
+from app.services.task_log import log_dir, task_log_path, write_task_log
 from app.ui.widgets import CloneItem, NavButton, RowWidget
 from app.ui.workers import AsyncJob
 
@@ -599,9 +599,13 @@ class VoiceCloneWindow(QMainWindow):
         self.connectivity_button = QPushButton("测试连通性")
         self.connectivity_button.setObjectName("GhostButton")
         self.connectivity_button.clicked.connect(self._start_connectivity_test)
+        log_button = QPushButton("打开日志目录")
+        log_button.setObjectName("GhostButton")
+        log_button.clicked.connect(self._open_log_dir)
         actions.addWidget(save_button)
         actions.addWidget(choose_button)
         actions.addWidget(self.connectivity_button)
+        actions.addWidget(log_button)
         actions.addStretch(1)
         self.settings_status_label = QLabel("")
         self.settings_status_label.setObjectName("MutedLabel")
@@ -1092,6 +1096,14 @@ class VoiceCloneWindow(QMainWindow):
             os.startfile(str(directory))
         else:
             QMessageBox.information(self, "输出目录", str(directory))
+
+    def _open_log_dir(self) -> None:
+        directory = log_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        if hasattr(os, "startfile"):
+            os.startfile(str(directory))
+        else:
+            QMessageBox.information(self, "日志目录", str(directory))
 
     def _play_item(self, item_id: int) -> None:
         self._sync_rows_from_widgets()
