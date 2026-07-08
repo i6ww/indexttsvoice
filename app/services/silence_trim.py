@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import wave
 
 import lameenc
 import miniaudio
@@ -34,15 +35,7 @@ def shorten_silence(
         keep_silence_ms=max(30, min(2000, int(keep_silence_ms))),
         threshold_db=max(-80.0, min(-20.0, float(threshold_db))),
     )
-    decoded = miniaudio.decode_file(
-        str(path),
-        output_format=miniaudio.SampleFormat.SIGNED16,
-        nchannels=2,
-        sample_rate=44100,
-    )
-    sample_rate = int(decoded.sample_rate)
-    channels = int(decoded.nchannels)
-    pcm = np.frombuffer(decoded.samples, dtype=np.int16).reshape(-1, channels)
+    pcm, sample_rate, channels = _decode_audio(path)
     if pcm.size == 0:
         return SilenceTrimResult(path, 0, 0, 0)
 
@@ -69,6 +62,58 @@ def shorten_silence(
         processed_duration_ms=processed_duration_ms,
         compressed_segments=compressed_segments,
     )
+
+
+def _decode_audio(path: Path) -> tuple[np.ndarray, int, int]:
+    if path.suffix.lower() == ".wav":
+        try:
+            return _decode_wav(path)
+        except (wave.Error, OSError, ValueError):
+            pass
+    decoded = miniaudio.decode_file(
+        str(path),
+        output_format=miniaudio.SampleFormat.SIGNED16,
+    )
+    sample_rate = int(decoded.sample_rate)
+    channels = int(decoded.nchannels)
+    pcm = np.frombuffer(decoded.samples, dtype=np.int16).reshape(-1, channels)
+    return pcm, sample_rate, channels
+
+
+def _decode_wav(path: Path) -> tuple[np.ndarray, int, int]:
+    with wave.open(str(path), "rb") as wav_file:
+        channels = wav_file.getnchannels()
+        sample_width = wav_file.getsampwidth()
+        sample_rate = wav_file.getframerate()
+        frames = wav_file.readframes(wav_file.getnframes())
+
+    if channels <= 0 or sample_rate <= 0:
+        raise ValueError("invalid wav metadata")
+    if not frames:
+        return np.empty((0, channels), dtype=np.int16), sample_rate, channels
+
+    if sample_width == 1:
+        pcm = (np.frombuffer(frames, dtype=np.uint8).astype(np.int16) - 128) << 8
+    elif sample_width == 2:
+        pcm = np.frombuffer(frames, dtype="<i2").astype(np.int16, copy=False)
+    elif sample_width == 3:
+        raw = np.frombuffer(frames, dtype=np.uint8).reshape(-1, 3)
+        signed = (
+            raw[:, 0].astype(np.int32)
+            | (raw[:, 1].astype(np.int32) << 8)
+            | (raw[:, 2].astype(np.int32) << 16)
+        )
+        signed = np.where(signed & 0x800000, signed | ~0xFFFFFF, signed)
+        pcm = (signed >> 8).astype(np.int16)
+    elif sample_width == 4:
+        pcm = (np.frombuffer(frames, dtype="<i4") >> 16).astype(np.int16)
+    else:
+        raise ValueError(f"unsupported wav sample width: {sample_width}")
+
+    usable = (pcm.size // channels) * channels
+    if usable != pcm.size:
+        pcm = pcm[:usable]
+    return pcm.reshape(-1, channels), sample_rate, channels
 
 
 def _compress_silence(

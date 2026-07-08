@@ -79,6 +79,17 @@ Gitee AI 接口需要服务器主动拉取参考音频，因此音色 URL 必须
 %APPDATA%\MiaoTuVoiceFactory\logs\tasks.jsonl
 ```
 
+停顿处理结果也会写入这个文件：
+
+- `silence_trim_finished`：停顿处理已执行。重点看 `compressed_segments`、`original_duration_ms`、`processed_duration_ms`，分别表示压缩了几段静音、处理前时长、处理后时长。
+- `silence_trim_failed`：停顿处理失败，程序会保留原始音频。重点看 `error` 字段，通常用于判断是音频解码失败、文件格式不支持，还是其他处理异常。
+
+可以用记事本直接打开：
+
+```powershell
+notepad "$env:APPDATA\MiaoTuVoiceFactory\logs\tasks.jsonl"
+```
+
 旧版本配置会自动从以下目录读取：
 
 ```text
@@ -167,6 +178,8 @@ voice_20260707_153012_428_01_船上丢下去.mp3
 
 - 新增停顿处理：支持用户自定义最短静音、保留停顿和静音阈值。
 - 新增 mp3 静音处理链路：`miniaudio` 解码、`numpy` 检测、`lameenc` 重新编码。
+- 修复部分 WAV 生成文件停顿处理失败的问题：WAV 文件优先使用 Python 标准库读取，避免 `miniaudio` 对某些 PCM WAV 解码失败。
+- 优化停顿处理反馈：生成完成后会显示压缩段数和处理前后时长；日志会记录本次使用的停顿处理参数。
 - 修复音频扩展名识别：优先根据文件头判断 WAV/MP3，避免剪辑软件因后缀和真实格式不一致而导入失败。
 - 优化打包脚本：补充 `_cffi_backend` 打包规则，修复打包后启动缺少 cffi 依赖的问题。
 

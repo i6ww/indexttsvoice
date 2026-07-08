@@ -74,6 +74,7 @@ class GenerateOutcome:
     index: int
     output_path: Path | None = None
     error: str | None = None
+    trim_message: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -888,7 +889,7 @@ class VoiceCloneWindow(QMainWindow):
                     output_format=spec.output_format,
                 )
                 try:
-                    output = await self._generate_spec(spec)
+                    output, trim_message = await self._generate_spec(spec)
                 except BaseException as exc:  # noqa: BLE001 - keep other rows running
                     message = str(exc)
                     await asyncio.to_thread(
@@ -900,6 +901,9 @@ class VoiceCloneWindow(QMainWindow):
                     )
                     progress(("item_failed", spec.item_id, message))
                     return GenerateOutcome(item_id=spec.item_id, index=spec.index, error=message)
+                status_message = "已生成"
+                if trim_message:
+                    status_message = f"已生成，{trim_message}"
                 await asyncio.to_thread(
                     write_task_log,
                     "finished",
@@ -907,11 +911,12 @@ class VoiceCloneWindow(QMainWindow):
                     index=spec.index,
                     output_path=output,
                 )
-                progress(("item_done", spec.item_id, output))
+                progress(("item_done", spec.item_id, output, status_message))
                 return GenerateOutcome(
                     item_id=spec.item_id,
                     index=spec.index,
                     output_path=output,
+                    trim_message=trim_message,
                 )
 
             tasks = [asyncio.create_task(run_one(spec)) for spec in specs]
@@ -935,10 +940,10 @@ class VoiceCloneWindow(QMainWindow):
         self.current_jobs.append(worker)
         worker.start()
 
-    async def _generate_spec(self, spec: GenerateSpec) -> Path:
+    async def _generate_spec(self, spec: GenerateSpec) -> tuple[Path, str | None]:
         output = await create_speech(spec.request)
         if not self.config_model.silence_trim_enabled:
-            return output
+            return output, None
         try:
             result = await asyncio.to_thread(
                 shorten_silence,
@@ -955,8 +960,11 @@ class VoiceCloneWindow(QMainWindow):
                 index=spec.index,
                 output_path=output,
                 error=str(exc),
+                min_silence_ms=self.config_model.silence_trim_min_silence_ms,
+                keep_silence_ms=self.config_model.silence_trim_keep_silence_ms,
+                threshold_db=self.config_model.silence_trim_threshold_db,
             )
-            return output
+            return output, "停顿处理失败，已保留原音频"
         await asyncio.to_thread(
             write_task_log,
             "silence_trim_finished",
@@ -966,8 +974,18 @@ class VoiceCloneWindow(QMainWindow):
             original_duration_ms=result.original_duration_ms,
             processed_duration_ms=result.processed_duration_ms,
             compressed_segments=result.compressed_segments,
+            min_silence_ms=self.config_model.silence_trim_min_silence_ms,
+            keep_silence_ms=self.config_model.silence_trim_keep_silence_ms,
+            threshold_db=self.config_model.silence_trim_threshold_db,
         )
-        return result.output_path
+        if result.compressed_segments <= 0:
+            return result.output_path, "未发现需要压缩的长停顿"
+        original_seconds = result.original_duration_ms / 1000
+        processed_seconds = result.processed_duration_ms / 1000
+        return (
+            result.output_path,
+            f"压缩{result.compressed_segments}段，{original_seconds:.1f}s -> {processed_seconds:.1f}s",
+        )
 
     def _handle_worker_progress(self, payload: object) -> None:
         if not isinstance(payload, tuple):
@@ -985,14 +1003,15 @@ class VoiceCloneWindow(QMainWindow):
         elif kind == "item_done":
             item_id = int(payload[1])
             output = Path(payload[2])
+            status = str(payload[3]) if len(payload) > 3 else "已生成"
             item = self._find_item(item_id)
             if item is not None:
                 item.output_path = output
-                item.status = "已生成"
+                item.status = status
             row = self.row_widgets.get(item_id)
             if row is not None:
                 row.item.output_path = output
-                row.set_status("已生成")
+                row.set_status(status)
                 row.generate_button.setText("重新生成")
         elif kind == "item_failed":
             item_id = int(payload[1])
@@ -1014,7 +1033,9 @@ class VoiceCloneWindow(QMainWindow):
         self._set_busy(False, status)
         self._render_clone_rows()
         paths = "\n".join(
-            str(outcome.output_path) for outcome in succeeded[:8] if outcome.output_path
+            self._format_success_line(outcome)
+            for outcome in succeeded[:8]
+            if outcome.output_path
         )
         if len(succeeded) > 8:
             paths += f"\n... 其余 {len(succeeded) - 8} 个文件已保存到输出目录"
@@ -1034,6 +1055,12 @@ class VoiceCloneWindow(QMainWindow):
             QMessageBox.warning(self, "生成完成但有失败", message)
             return
         QMessageBox.information(self, "生成完成", f"音频已保存：\n{paths}")
+
+    def _format_success_line(self, outcome: GenerateOutcome) -> str:
+        line = str(outcome.output_path)
+        if outcome.trim_message:
+            line += f"\n  停顿处理：{outcome.trim_message}"
+        return line
 
     def _generate_failed(self, exc: BaseException) -> None:
         self._set_busy(False, "生成失败")
