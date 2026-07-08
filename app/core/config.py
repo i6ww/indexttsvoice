@@ -52,7 +52,10 @@ class AppConfig:
     output_dir: str = "outputs"
     output_format: str = "wav"
     max_concurrent_tasks: int = 3
-    silence_trim_mode: str = "off"
+    silence_trim_enabled: bool = False
+    silence_trim_min_silence_ms: int = 350
+    silence_trim_keep_silence_ms: int = 180
+    silence_trim_threshold_db: float = -45.0
     failover_enabled: bool = True
     selected_voice_profile: str = "小鱼"
     voice_profiles: list[VoiceProfile] = field(default_factory=default_voice_profiles)
@@ -78,6 +81,9 @@ def load_config() -> AppConfig:
         return config
 
     profiles = _load_voice_profiles(data)
+    trim_enabled, min_silence_ms, keep_silence_ms, threshold_db = _load_silence_trim(
+        data, config
+    )
     loaded = AppConfig(
         api_key=data.get("api_key", config.api_key),
         base_url=data.get("base_url", config.base_url),
@@ -87,7 +93,10 @@ def load_config() -> AppConfig:
         max_concurrent_tasks=_coerce_int(
             data.get("max_concurrent_tasks"), config.max_concurrent_tasks, 1, 10
         ),
-        silence_trim_mode=str(data.get("silence_trim_mode", config.silence_trim_mode)),
+        silence_trim_enabled=trim_enabled,
+        silence_trim_min_silence_ms=min_silence_ms,
+        silence_trim_keep_silence_ms=keep_silence_ms,
+        silence_trim_threshold_db=threshold_db,
         failover_enabled=bool(data.get("failover_enabled", config.failover_enabled)),
         selected_voice_profile=data.get(
             "selected_voice_profile", profiles[0].name
@@ -151,6 +160,31 @@ def _coerce_int(value: Any, default: int, minimum: int, maximum: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(minimum, min(maximum, number))
+
+
+def _load_silence_trim(data: dict[str, Any], config: AppConfig) -> tuple[bool, int, int, float]:
+    legacy_presets: dict[str, tuple[int, int, float]] = {
+        "natural": (600, 350, -45.0),
+        "compact": (350, 180, -45.0),
+        "short": (220, 100, -45.0),
+    }
+    mode = str(data.get("silence_trim_mode", "off"))
+    preset = legacy_presets.get(mode)
+
+    enabled = bool(data.get("silence_trim_enabled", mode != "off"))
+    default_min = preset[0] if preset else config.silence_trim_min_silence_ms
+    default_keep = preset[1] if preset else config.silence_trim_keep_silence_ms
+    default_threshold = preset[2] if preset else config.silence_trim_threshold_db
+
+    min_silence_ms = _coerce_int(
+        data.get("silence_trim_min_silence_ms"), default_min, 50, 3000
+    )
+    keep_silence_ms = _coerce_int(
+        data.get("silence_trim_keep_silence_ms"), default_keep, 30, 2000
+    )
+    threshold_db = _coerce_float(data.get("silence_trim_threshold_db"), default_threshold)
+    threshold_db = max(-80.0, min(-20.0, threshold_db))
+    return enabled, min_silence_ms, keep_silence_ms, threshold_db
 
 
 def save_config(config: AppConfig) -> Path:

@@ -9,8 +9,7 @@ import numpy as np
 
 
 @dataclass(frozen=True)
-class SilenceTrimPreset:
-    label: str
+class SilenceTrimSettings:
     min_silence_ms: int
     keep_silence_ms: int
     threshold_db: float
@@ -24,30 +23,17 @@ class SilenceTrimResult:
     compressed_segments: int
 
 
-SILENCE_TRIM_PRESETS: dict[str, SilenceTrimPreset] = {
-    "off": SilenceTrimPreset("关闭", 0, 0, -45.0),
-    "natural": SilenceTrimPreset("自然", 600, 350, -45.0),
-    "compact": SilenceTrimPreset("紧凑", 350, 180, -45.0),
-    "short": SilenceTrimPreset("极短", 220, 100, -45.0),
-}
-
-SILENCE_TRIM_LABELS: dict[str, str] = {
-    key: preset.label for key, preset in SILENCE_TRIM_PRESETS.items()
-}
-
-
-def normalize_silence_trim_mode(value: str) -> str:
-    if value in SILENCE_TRIM_PRESETS:
-        return value
-    return "off"
-
-
-def shorten_silence(path: Path, mode: str) -> SilenceTrimResult:
-    mode = normalize_silence_trim_mode(mode)
-    preset = SILENCE_TRIM_PRESETS[mode]
-    if mode == "off":
-        return SilenceTrimResult(path, 0, 0, 0)
-
+def shorten_silence(
+    path: Path,
+    min_silence_ms: int,
+    keep_silence_ms: int,
+    threshold_db: float,
+) -> SilenceTrimResult:
+    settings = SilenceTrimSettings(
+        min_silence_ms=max(50, min(3000, int(min_silence_ms))),
+        keep_silence_ms=max(30, min(2000, int(keep_silence_ms))),
+        threshold_db=max(-80.0, min(-20.0, float(threshold_db))),
+    )
     decoded = miniaudio.decode_file(
         str(path),
         output_format=miniaudio.SampleFormat.SIGNED16,
@@ -61,7 +47,7 @@ def shorten_silence(path: Path, mode: str) -> SilenceTrimResult:
         return SilenceTrimResult(path, 0, 0, 0)
 
     original_duration_ms = int((len(pcm) / sample_rate) * 1000)
-    processed, compressed_segments = _compress_silence(pcm, sample_rate, preset)
+    processed, compressed_segments = _compress_silence(pcm, sample_rate, settings)
     processed_duration_ms = int((len(processed) / sample_rate) * 1000)
 
     if compressed_segments <= 0 or len(processed) >= len(pcm):
@@ -88,17 +74,17 @@ def shorten_silence(path: Path, mode: str) -> SilenceTrimResult:
 def _compress_silence(
     pcm: np.ndarray,
     sample_rate: int,
-    preset: SilenceTrimPreset,
+    settings: SilenceTrimSettings,
 ) -> tuple[np.ndarray, int]:
     frame_ms = 20
     frame_samples = max(1, int(sample_rate * frame_ms / 1000))
-    min_silence_frames = max(1, int(preset.min_silence_ms / frame_ms))
-    keep_frames = max(1, int(preset.keep_silence_ms / frame_ms))
+    min_silence_frames = max(1, int(settings.min_silence_ms / frame_ms))
+    keep_frames = max(1, int(settings.keep_silence_ms / frame_ms))
 
     mono = pcm.astype(np.float32).mean(axis=1)
     total_frames = int(np.ceil(len(mono) / frame_samples))
     silent = np.zeros(total_frames, dtype=bool)
-    threshold = _db_to_amplitude(preset.threshold_db)
+    threshold = _db_to_amplitude(settings.threshold_db)
 
     for frame_index in range(total_frames):
         start = frame_index * frame_samples
